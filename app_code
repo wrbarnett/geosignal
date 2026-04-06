@@ -1,0 +1,150 @@
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+THRESHOLD = 0.99865
+
+st.set_page_config(page_title="GeoSignal", page_icon="📡", layout="wide")
+
+st.title("Geometric Probability Calculator (Rare Events)")
+st.caption("Upload event dates to calculate days between events, geometric probability, and special-cause signal status.")
+
+
+def geometric_daily_probability(mean_days_between_events: float, n: int) -> float:
+    if pd.isna(mean_days_between_events) or n < 2:
+        return np.nan
+    return (1.0 / (mean_days_between_events + 1.0)) * ((n - 1.0) / n)
+
+
+def cumulative_interval_probability(p: float, k: float) -> float:
+    if pd.isna(p) or pd.isna(k) or k < 0:
+        return np.nan
+    return 1.0 - ((1.0 - p) ** float(k))
+
+
+def first_signal_day(p: float, threshold: float = THRESHOLD):
+    if pd.isna(p) or p <= 0 or p >= 1:
+        return np.nan
+    days = np.log(1 - threshold) / np.log(1 - p)
+    return int(np.ceil(days))
+
+
+def process_events(df, date_col):
+    df = df.copy()
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+    df = df.dropna(subset=[date_col]).sort_values(date_col).reset_index(drop=True)
+
+    df["Days between events"] = df[date_col].diff().dt.days
+    df["Data value"] = np.arange(1, len(df) + 1)
+    df["Mean days between events"] = df["Days between events"].expanding().mean()
+    df["Probability"] = [
+        geometric_daily_probability(m, n)
+        for m, n in zip(df["Mean days between events"], df["Data value"])
+    ]
+    df["Interval probability"] = [
+        cumulative_interval_probability(p, k)
+        for p, k in zip(df["Probability"], df["Days between events"])
+    ]
+    df["Special cause?"] = np.where(
+        df["Interval probability"] >= THRESHOLD,
+        "Yes",
+        ""
+    )
+
+    df = df.rename(columns={date_col: "Date of event"})
+    return df
+
+
+uploaded = st.file_uploader("Upload CSV with event dates", type=["csv"])
+
+if uploaded:
+    raw_df = pd.read_csv(uploaded)
+else:
+    st.info("Upload a CSV file with at least one date column, such as event_date.")
+    st.stop()
+
+date_col = st.selectbox("Select date column", options=list(raw_df.columns))
+
+result = process_events(raw_df, date_col)
+
+if result.empty:
+    st.warning("No valid event dates were found.")
+    st.stop()
+
+st.subheader("Results")
+
+display_df = result.copy()
+display_df["Date of event"] = pd.to_datetime(display_df["Date of event"]).dt.strftime("%m/%d/%Y")
+display_df["Mean days between events"] = display_df["Mean days between events"].round(3)
+display_df["Probability"] = display_df["Probability"].round(5)
+display_df["Interval probability"] = display_df["Interval probability"].round(5)
+
+st.dataframe(display_df, use_container_width=True)
+
+latest_row = result.dropna(subset=["Probability"]).tail(1)
+
+if latest_row.empty:
+    st.warning("At least 2 events are needed before probability-based signaling can be calculated.")
+else:
+    latest_p = float(latest_row["Probability"].iloc[0])
+    last_event_date = pd.to_datetime(result["Date of event"].max()).normalize()
+    today = pd.Timestamp.today().normalize()
+    days_since_last_event = int((today - last_event_date).days)
+    current_probability = cumulative_interval_probability(latest_p, days_since_last_event)
+    signal_day = first_signal_day(latest_p, THRESHOLD)
+    projected_signal_date = last_event_date + pd.Timedelta(days=int(signal_day)) if pd.notna(signal_day) else pd.NaT
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Signal threshold", f"{THRESHOLD:.5f}")
+    c2.metric("Last event date", last_event_date.strftime("%m/%d/%Y"))
+    c3.metric("Days since last event", f"{days_since_last_event}")
+    c4.metric("Current cumulative probability", f"{current_probability:.5f}")
+
+    if current_probability >= THRESHOLD:
+        st.success(
+            f"Special cause variation detected. The cumulative probability since the last event is "
+            f"{current_probability:.5f}, which is above the threshold of {THRESHOLD:.5f}. "
+            f"This suggests true change rather than routine variation."
+        )
+    else:
+        st.warning(
+            f"No special-cause signal yet. The cumulative probability since the last event is "
+            f"{current_probability:.5f}, which is still below the threshold of {THRESHOLD:.5f}."
+        )
+
+    if pd.notna(projected_signal_date):
+        st.markdown(
+            f"""
+**Signal timing estimate**
+- Estimated day threshold is crossed: **day {signal_day}** after the last event
+- Estimated signal date: **{projected_signal_date.strftime("%m/%d/%Y")}**
+"""
+        )
+
+    if current_probability < THRESHOLD:
+        progress = float(current_probability / THRESHOLD)
+        progress = max(0.0, min(progress, 1.0))
+        st.progress(progress, text="Progress toward special-cause threshold")
+
+st.markdown("---")
+st.markdown(
+    """
+**Interpretation**
+- **Probability** is the estimated daily event probability from the running mean days between events.
+- **Interval probability** is the cumulative probability for that observed interval.
+- A **current cumulative probability** above **0.99865** is treated here as a special-cause signal, indicating likely true change.
+"""
+)
+
+csv = result.copy()
+csv["Date of event"] = pd.to_datetime(csv["Date of event"]).dt.strftime("%m/%d/%Y")
+csv["Mean days between events"] = csv["Mean days between events"].round(3)
+csv["Probability"] = csv["Probability"].round(5)
+csv["Interval probability"] = csv["Interval probability"].round(5)
+
+st.download_button(
+    "Download results CSV",
+    csv.to_csv(index=False).encode("utf-8"),
+    "geo_probability_results_with_signal.csv",
+    "text/csv",
+)
