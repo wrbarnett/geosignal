@@ -1,3 +1,5 @@
+<img width="256" height="256" alt="image" src="https://github.com/user-attachments/assets/dcbb07dd-e5f5-4d44-8cc3-35ca97bb8df7" />
+
 # 📡 GeoSignal (Rare Events)
 
 ## Overview
