@@ -6,7 +6,7 @@ THRESHOLD = 0.99865
 
 st.set_page_config(page_title="GeoSignal", page_icon="📡", layout="wide")
 
-st.title("Geometric Probability Calculator (Rare Events)")
+st.title("GeoSignal")
 st.caption("Upload event dates to calculate days between events, geometric probability, and special-cause signal status.")
 
 
